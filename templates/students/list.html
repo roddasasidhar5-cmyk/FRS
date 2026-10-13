@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Students — FaceAttend{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0"><i class="bi bi-people me-2 text-info"></i>Students</h4>
+  {% if current_user.role == 'admin' %}
+  <a href="{{ url_for('students_add') }}" class="btn btn-info btn-sm">
+    <i class="bi bi-person-plus me-1"></i>Add Student
+  </a>
+  {% endif %}
+</div>
+
+<!-- Filter bar -->
+<form class="row g-2 mb-3" method="GET" action="{{ url_for('students_list') }}">
+  <div class="col-auto">
+    <select name="class_id" class="form-select form-select-sm">
+      <option value="">All Classes</option>
+      {% for c in classes %}
+        <option value="{{ c.id }}" {% if selected_class == c.id %}selected{% endif %}>
+          {{ c.name }} / {{ c.section }}
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-outline-primary btn-sm">
+      <i class="bi bi-funnel me-1"></i>Filter
+    </button>
+    {% if selected_class %}
+    <a href="{{ url_for('students_list') }}" class="btn btn-outline-secondary btn-sm ms-1">
+      Clear
+    </a>
+    {% endif %}
+  </div>
+</form>
+
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    {% if students %}
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="table-dark">
+          <tr>
+            <th>Name</th>
+            <th>Roll No.</th>
+            <th>Class</th>
+            <th>Enrolled Faces</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in students %}
+          <tr>
+            <td>{{ s.name }}</td>
+            <td>{{ s.roll_number }}</td>
+            <td>{{ s.class_name }} / {{ s.section }}</td>
+            <td>
+              <span class="badge {% if s.face_count > 0 %}bg-success{% else %}bg-warning text-dark{% endif %}">
+                {{ s.face_count }} photo(s)
+              </span>
+            </td>
+            <td>
+              <a href="{{ url_for('students_detail', student_id=s.id) }}"
+                 class="btn btn-outline-info btn-sm me-1">
+                <i class="bi bi-eye"></i>
+              </a>
+              {% if current_user.role == 'admin' %}
+              <form method="POST"
+                    action="{{ url_for('students_delete', student_id=s.id) }}"
+                    class="d-inline"
+                    onsubmit="return confirm('Delete student {{ s.name }}?')">
+                <button type="submit" class="btn btn-outline-danger btn-sm">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="p-4 text-center text-muted">
+      <i class="bi bi-person-x display-5 d-block mb-2"></i>
+      No students found.
+      {% if current_user.role == 'admin' %}
+        <a href="{{ url_for('students_add') }}">Add the first student</a>.
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

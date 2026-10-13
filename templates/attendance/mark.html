@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Mark Attendance — {{ cls.name }} / {{ cls.section }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0">
+    <i class="bi bi-camera-video me-2 text-info"></i>
+    Marking Attendance — {{ cls.name }} / {{ cls.section }}
+  </h4>
+  <form method="POST" action="{{ url_for('attendance_stop', class_id=cls.id) }}">
+    <button type="submit" class="btn btn-warning btn-sm"
+            onclick="return confirm('Stop attendance session?')">
+      <i class="bi bi-stop-circle me-1"></i>Stop Session
+    </button>
+  </form>
+</div>
+
+<div class="row g-3">
+  <!-- Left: live feed -->
+  <div class="col-lg-7">
+    <div class="card shadow-sm">
+      <div class="card-header bg-dark text-light d-flex justify-content-between">
+        <span><i class="bi bi-camera me-2"></i>Live Feed</span>
+        <span id="recog-badge" class="badge recognition-badge bg-secondary">WAITING</span>
+      </div>
+      <div class="card-body p-0">
+        <div class="stream-box">
+          <img src="{{ url_for('video_feed') }}" alt="Live feed"
+               id="live-feed" onerror="this.style.display='none'">
+        </div>
+      </div>
+      <div class="card-footer bg-dark text-light small">
+        <span id="recog-name" class="me-3">—</span>
+        <span id="recog-fps" class="text-muted"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: present list -->
+  <div class="col-lg-5">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-dark text-light d-flex justify-content-between">
+        <span><i class="bi bi-person-check me-2"></i>Present Today</span>
+        <span class="badge bg-success" id="present-count">0</span>
+      </div>
+      <div class="card-body p-0">
+        <ul class="list-group list-group-flush present-list" id="present-list">
+          <li class="list-group-item text-muted text-center py-4" id="empty-msg">
+            <i class="bi bi-hourglass-split me-1"></i>Waiting for recognitions…
+          </li>
+        </ul>
+      </div>
+      <div class="card-footer bg-light">
+        <small class="text-muted">
+          Total enrolled: <strong>{{ students|length }}</strong>
+          &nbsp;|&nbsp; Auto-updates every 2 s
+        </small>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const classId = {{ cls.id }};
+
+// Poll attendance status
+function pollAttendance() {
+  fetch(`/attendance/status/${classId}`)
+    .then(r => r.json())
+    .then(data => {
+      const list  = document.getElementById('present-list');
+      const badge = document.getElementById('present-count');
+      const empty = document.getElementById('empty-msg');
+      badge.textContent = data.count;
+
+      if (data.present && data.present.length > 0) {
+        if (empty) empty.remove();
+        // Rebuild list
+        const existingIds = new Set(
+          [...list.querySelectorAll('[data-sid]')].map(el => el.dataset.sid)
+        );
+        data.present.forEach(s => {
+          if (!existingIds.has(String(s.id))) {
+            const li = document.createElement('li');
+            li.className = 'list-group-item d-flex justify-content-between align-items-center';
+            li.dataset.sid = s.id;
+            li.innerHTML = `
+              <span>
+                <i class="bi bi-person-check-fill text-success me-2"></i>
+                <strong class="attendance-present">${s.name}</strong>
+                <small class="text-muted ms-2">${s.roll_number}</small>
+              </span>
+              <span class="badge bg-success rounded-pill">${s.time}</span>`;
+            list.appendChild(li);
+          }
+        });
+      }
+    }).catch(() => {});
+}
+
+// Poll recognition status
+function pollStatus() {
+  fetch('/status')
+    .then(r => r.json())
+    .then(data => {
+      const badge = document.getElementById('recog-badge');
+      const name  = document.getElementById('recog-name');
+      const fps   = document.getElementById('recog-fps');
+
+      const colorMap = {
+        'GRANTED': 'bg-success',
+        'DENIED':  'bg-danger',
+        'SPOOF':   'bg-warning text-dark',
+        'WAITING': 'bg-secondary'
+      };
+      badge.className = `badge recognition-badge ${colorMap[data.decision] || 'bg-secondary'}`;
+      badge.textContent = data.decision || 'WAITING';
+      name.textContent  = data.name ? `👤 ${data.name}` : '—';
+      fps.textContent   = data.fps ? `${data.fps} fps` : '';
+    }).catch(() => {});
+}
+
+setInterval(pollAttendance, 2000);
+setInterval(pollStatus, 1000);
+pollAttendance();
+pollStatus();
+</script>
+{% endblock %}

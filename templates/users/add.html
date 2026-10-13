@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Add User — FaceAttend{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-5">
+    <div class="card shadow-sm">
+      <div class="card-header bg-dark text-light">
+        <i class="bi bi-person-plus me-2"></i>Add New User
+      </div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('users_add') }}">
+          <div class="mb-3">
+            <label class="form-label fw-semibold" for="username">Username</label>
+            <input type="text" id="username" name="username"
+                   class="form-control" placeholder="Choose a username"
+                   required autofocus autocomplete="off">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold" for="password">Password</label>
+            <input type="password" id="password" name="password"
+                   class="form-control" placeholder="Set a password"
+                   required autocomplete="new-password">
+          </div>
+          <div class="mb-4">
+            <label class="form-label fw-semibold" for="role">Role</label>
+            <select id="role" name="role" class="form-select">
+              <option value="teacher">Teacher</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-info">
+              <i class="bi bi-check-lg me-1"></i>Create User
+            </button>
+            <a href="{{ url_for('users_list') }}" class="btn btn-outline-secondary">
+              Cancel
+            </a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Add Student — FaceAttend{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card shadow-sm">
+      <div class="card-header bg-dark text-light">
+        <i class="bi bi-person-plus me-2"></i>Add New Student
+      </div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('students_add') }}">
+          <div class="mb-3">
+            <label class="form-label fw-semibold" for="name">Full Name</label>
+            <input type="text" id="name" name="name" class="form-control"
+                   placeholder="Student full name" required autofocus>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold" for="roll_number">Roll Number</label>
+            <input type="text" id="roll_number" name="roll_number" class="form-control"
+                   placeholder="e.g. 2024001" required>
+          </div>
+          <div class="mb-4">
+            <label class="form-label fw-semibold" for="class_id">Class</label>
+            <select id="class_id" name="class_id" class="form-select" required>
+              <option value="">— Select class —</option>
+              {% for c in classes %}
+                <option value="{{ c.id }}">{{ c.name }} / {{ c.section }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-info">
+              <i class="bi bi-check-lg me-1"></i>Add Student
+            </button>
+            <a href="{{ url_for('students_list') }}" class="btn btn-outline-secondary">
+              Cancel
+            </a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,93 @@
+/* FaceAttend — custom styles on top of Bootstrap 5 */
+
+:root {
+  --brand: #38bdf8;
+  --sidebar-bg: #131b2e;
+  --card-border: rgba(56,189,248,.25);
+}
+
+/* ── Navbar / sidebar link active state ── */
+.navbar-dark .nav-link.active,
+.navbar-dark .nav-link:focus {
+  color: var(--brand) !important;
+  border-bottom: 2px solid var(--brand);
+}
+
+/* ── Stat cards ── */
+.card-stat {
+  border: 1px solid var(--card-border);
+  border-radius: .75rem;
+  box-shadow: 0 2px 12px rgba(0,0,0,.12);
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.card-stat:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 20px rgba(0,0,0,.18);
+}
+.card-stat .card-icon {
+  font-size: 2.4rem;
+  opacity: .85;
+}
+
+/* ── Attendance status colours ── */
+.attendance-present {
+  color: #16a34a;
+  font-weight: 600;
+}
+.attendance-pending {
+  color: #ea580c;
+}
+.badge-present {
+  background-color: #16a34a !important;
+}
+.badge-absent {
+  background-color: #dc2626 !important;
+}
+
+/* ── Live video feed container ── */
+.stream-box {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  border-radius: .5rem;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0,0,0,.35);
+}
+.stream-box img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ── Recognition status badge overlay ── */
+.recognition-badge {
+  font-size: .85rem;
+  letter-spacing: .04em;
+}
+
+/* ── Face image thumbnails ── */
+.face-thumb {
+  width: 100px;
+  height: 100px;
+  object-fit: cover;
+  border-radius: .4rem;
+  border: 2px solid var(--card-border);
+}
+
+/* ── Capture page video element ── */
+#cam-preview {
+  border-radius: .5rem;
+  max-width: 100%;
+  background: #000;
+}
+
+/* ── Table tweaks ── */
+.table-hover tbody tr:hover {
+  background-color: rgba(56,189,248,.06);
+}
+
+/* ── Scrollable attendance list ── */
+.present-list {
+  max-height: 420px;
+  overflow-y: auto;
+}

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+venv311/
+.venv/
+env/
+
+# App runtime / secrets
+attendance.db
+.secret_key
+cert.pem
+key.pem
+
+# Face image data (not committed — add your own)
+static/faces/
+static/user_faces/
+static/react/
+
+# Frontend dependencies & build output
+frontend/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Agents / workflow artifacts
+.agents/

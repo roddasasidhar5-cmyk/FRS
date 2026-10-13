@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}{{ student.name }} — FaceAttend{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0">
+    <i class="bi bi-person-badge me-2 text-info"></i>{{ student.name }}
+  </h4>
+  <a href="{{ url_for('students_list') }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left me-1"></i>Back to Students
+  </a>
+</div>
+
+<!-- Student info card -->
+<div class="row g-3 mb-4">
+  <div class="col-md-4">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-dark text-light">
+        <i class="bi bi-info-circle me-2"></i>Student Info
+      </div>
+      <div class="card-body">
+        <table class="table table-borderless mb-0">
+          <tr><th class="text-muted w-50">Name</th><td>{{ student.name }}</td></tr>
+          <tr><th class="text-muted">Roll No.</th><td>{{ student.roll_number }}</td></tr>
+          <tr><th class="text-muted">Class</th><td>{{ student.class_name }} / {{ student.section }}</td></tr>
+          <tr><th class="text-muted">Enrolled</th>
+              <td>
+                <span class="badge {% if faces|length > 0 %}bg-success{% else %}bg-warning text-dark{% endif %}">
+                  {{ faces|length }} face photo(s)
+                </span>
+              </td>
+          </tr>
+        </table>
+      </div>
+      {% if current_user.role == 'admin' %}
+      <div class="card-footer">
+        <form method="POST"
+              action="{{ url_for('students_delete', student_id=student.id) }}"
+              onsubmit="return confirm('Delete student {{ student.name }}? This cannot be undone.')">
+          <button type="submit" class="btn btn-outline-danger btn-sm w-100">
+            <i class="bi bi-trash me-1"></i>Delete Student
+          </button>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Face management -->
+  <div class="col-md-8">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-dark text-light d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-camera me-2"></i>Enrolled Face Photos</span>
+        <div class="d-flex gap-2">
+          <a href="{{ url_for('faces_capture', student_id=student.id) }}"
+             class="btn btn-outline-info btn-sm">
+            <i class="bi bi-webcam me-1"></i>Capture Photo
+          </a>
+        </div>
+      </div>
+      <div class="card-body">
+        <!-- Upload form -->
+        <form method="POST"
+              action="{{ url_for('faces_upload', student_id=student.id) }}"
+              enctype="multipart/form-data"
+              class="mb-3">
+          <div class="input-group">
+            <input type="file" name="images" class="form-control form-control-sm"
+                   accept=".jpg,.jpeg,.png" multiple>
+            <button type="submit" class="btn btn-info btn-sm">
+              <i class="bi bi-cloud-upload me-1"></i>Upload
+            </button>
+          </div>
+          <div class="form-text">Select one or more JPG/PNG photos of the student.</div>
+        </form>
+
+        <!-- Face thumbnails -->
+        {% if faces %}
+        <div class="d-flex flex-wrap gap-2">
+          {% for f in faces %}
+          <div class="text-center">
+            <img src="{{ url_for('static', filename=f.image_path.replace('static/', '', 1).replace('static\\', '', 1)) }}"
+                 class="face-thumb"
+                 alt="Face {{ loop.index }}"
+                 onerror="this.src='https://via.placeholder.com/100?text=img'">
+            <div class="small text-muted mt-1">#{{ loop.index }}</div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center text-muted py-3">
+          <i class="bi bi-image display-5 d-block mb-2"></i>
+          No face photos enrolled yet. Upload photos or use the webcam capture.
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

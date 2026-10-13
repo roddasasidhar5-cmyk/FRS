@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Anti-Spoofing Face Recognition Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0b0f19;
+      --card: #131b2e;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --accent: #38bdf8;
+      --text: #f1f5f9;
+      --text-dim: #94a3b8;
+      --status-wait: #94a3b8;
+      --status-granted: #22c55e;
+      --status-denied: #ef4444;
+      --status-spoof: #f59e0b;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 1.25rem 2rem;
+      background: rgba(19, 27, 46, 0.7);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, #38bdf8, #6366f1);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.2rem;
+    }
+
+    .brand-text h1 {
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+
+    .brand-text p {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    .badge-live {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0.85rem;
+      border-radius: 999px;
+      background: rgba(34, 197, 94, 0.15);
+      border: 1px solid rgba(34, 197, 94, 0.4);
+      color: #4ade80;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    .badge-live .dot {
+      width: 8px;
+      height: 8px;
+      background: #22c55e;
+      border-radius: 50%;
+      box-shadow: 0 0 10px #22c55e;
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    main {
+      flex: 1;
+      padding: 1.5rem 2rem;
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 1.5rem;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .video-card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card-title {
+      padding: 1rem 1.25rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .video-container {
+      flex: 1;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      min-height: 480px;
+    }
+
+    .video-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .stream-overlay {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .tag {
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(8px);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .decision-banner {
+      background: var(--card);
+      border: 2px solid var(--card-border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      text-align: center;
+      transition: all 0.3s ease;
+    }
+
+    .decision-banner.WAITING { border-color: rgba(148, 163, 184, 0.4); }
+    .decision-banner.GRANTED { border-color: #22c55e; box-shadow: 0 0 25px rgba(34, 197, 94, 0.25); }
+    .decision-banner.DENIED  { border-color: #ef4444; box-shadow: 0 0 25px rgba(239, 68, 68, 0.25); }
+    .decision-banner.SPOOF   { border-color: #f59e0b; box-shadow: 0 0 25px rgba(245, 158, 11, 0.25); }
+
+    .decision-icon {
+      font-size: 2.75rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .decision-text {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.4rem;
+    }
+
+    .WAITING .decision-text { color: var(--status-wait); }
+    .GRANTED .decision-text { color: var(--status-granted); }
+    .DENIED  .decision-text { color: var(--status-denied); }
+    .SPOOF   .decision-text { color: var(--status-spoof); }
+
+    .decision-message {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+
+    .metrics-card, .log-card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 1.25rem;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-top: 0.75rem;
+    }
+
+    .metric-item {
+      background: rgba(255, 255, 255, 0.03);
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      border: 1px solid var(--card-border);
+    }
+
+    .metric-label {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+    }
+
+    .metric-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.2rem;
+      font-weight: 600;
+    }
+
+    .logs-container {
+      margin-top: 0.75rem;
+      max-height: 180px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .log-line {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      padding: 0.35rem 0.6rem;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    @media (max-width: 960px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="brand-icon">&#x1F6E1;</div>
+      <div class="brand-text">
+        <h1>Face Verification & Liveness System</h1>
+        <p>Anti-Spoofing & DE10 Link Dashboard</p>
+      </div>
+    </div>
+    <div class="badge-live">
+      <div class="dot"></div>
+      <span>SYSTEM ACTIVE</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="video-card">
+      <div class="card-title">
+        <span>Live Camera Stream</span>
+        <span class="tag" id="fps">0.0 FPS</span>
+      </div>
+      <div class="video-container">
+        <img src="/video_feed" alt="Video stream" />
+        <div class="stream-overlay">
+          <span class="tag" id="overlay-face">No Face</span>
+          <span class="tag" id="overlay-ear">EAR: 0.00</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar">
+      <div class="decision-banner WAITING" id="decision-banner">
+        <div class="decision-icon" id="decision-icon">&#x23F3;</div>
+        <div class="decision-text" id="decision-text">WAITING</div>
+        <div class="decision-message" id="decision-msg">Looking for a face...</div>
+      </div>
+
+      <div class="metrics-card">
+        <div class="card-title" style="padding:0 0 0.75rem 0;">Liveness Metrics</div>
+        <div class="metrics-grid">
+          <div class="metric-item">
+            <div class="metric-label">Identified User</div>
+            <div class="metric-val" id="metric-user">None</div>
+          </div>
+          <div class="metric-item">
+            <div class="metric-label">Liveness Status</div>
+            <div class="metric-val" id="metric-live" style="color:#ef4444;">NO</div>
+          </div>
+          <div class="metric-item">
+            <div class="metric-label">Total Blinks</div>
+            <div class="metric-val" id="metric-blinks">0</div>
+          </div>
+          <div class="metric-item">
+            <div class="metric-label">Eye Aspect Ratio</div>
+            <div class="metric-val" id="metric-ear">0.000</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="log-card">
+        <div class="card-title" style="padding:0 0 0.75rem 0;">Recent Events</div>
+        <div class="logs-container" id="logs">
+          <div class="log-line">System started.</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const icons = {
+      'WAITING': '&#x23F3;',
+      'GRANTED': '&#x2705;',
+      'DENIED': '&#x274C;',
+      'SPOOF': '&#x26A0;&#xFE0F;'
+    };
+
+    async function updateStatus() {
+      try {
+        const res = await fetch('/status');
+        const data = await res.json();
+
+        const banner = document.getElementById('decision-banner');
+        banner.className = 'decision-banner ' + (data.decision || 'WAITING');
+        document.getElementById('decision-icon').innerHTML = icons[data.decision] || '&#x23F3;';
+        document.getElementById('decision-text').textContent = data.decision || 'WAITING';
+        document.getElementById('decision-msg').textContent = data.message || '';
+
+        document.getElementById('fps').textContent = (data.fps || 0) + ' FPS';
+        document.getElementById('overlay-face').textContent = data.face_detected ? (data.name || 'Face Detected') : 'No Face';
+        document.getElementById('overlay-ear').textContent = 'EAR: ' + (data.ear || 0).toFixed(2);
+
+        document.getElementById('metric-user').textContent = data.name || 'Unknown';
+        const liveEl = document.getElementById('metric-live');
+        if (data.live) {
+          liveEl.textContent = 'LIVE';
+          liveEl.style.color = '#22c55e';
+        } else {
+          liveEl.textContent = 'NOT LIVE';
+          liveEl.style.color = '#ef4444';
+        }
+        document.getElementById('metric-blinks').textContent = data.blinks || 0;
+        document.getElementById('metric-ear').textContent = (data.ear || 0).toFixed(3);
+
+        if (data.events && data.events.length > 0) {
+          const container = document.getElementById('logs');
+          container.innerHTML = data.events.map(e => `<div class="log-line">${e}</div>`).join('');
+        }
+      } catch (err) {
+        console.error('Fetch error:', err);
+      }
+    }
+
+    setInterval(updateStatus, 500);
+    updateStatus();
+  </script>
+</body>
+</html>
