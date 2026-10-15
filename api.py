@@ -34,7 +34,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 MATCH_TOLERANCE  = 0.58
 EAR_THRESHOLD    = 0.21
 LIVE_WINDOW_SEC  = 10.0
-SCALE            = 0.75
+SCALE            = 0.4   # Reduced from 0.75 — processes ~512×288 instead of 960×540, ~3x faster
 
 DB_PATH    = os.path.join(os.path.dirname(__file__), "attendance.db")
 FACES_DIR  = os.path.join(os.path.dirname(__file__), "static", "faces")
@@ -113,6 +113,32 @@ def init_db():
         status      TEXT NOT NULL DEFAULT 'present',
         marked_by   INTEGER REFERENCES users(id)
     );
+    /* Unique guard — one row per student per class per day.
+       Added safely: deduplicate existing data first, then create the index. */
+    CREATE TABLE IF NOT EXISTS faculty_verifications (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id    INTEGER NOT NULL REFERENCES users(id),
+        class_id   INTEGER NOT NULL REFERENCES classes(id),
+        date       TEXT NOT NULL,
+        time       TEXT NOT NULL,
+        UNIQUE(user_id, class_id, date)
+    );
+    """)
+    # ── Deduplicate existing attendance rows before adding unique index ────────
+    # Keep only the earliest row per (student_id, class_id, date) combination
+    conn.execute("""
+        DELETE FROM attendance
+        WHERE id NOT IN (
+            SELECT MIN(id)
+            FROM attendance
+            GROUP BY student_id, class_id, date
+        )
+    """)
+    conn.commit()
+    # Now safe to create the unique index
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_attendance_student_class_date
+            ON attendance(student_id, class_id, date)
     """)
     # Seed super_admin
     if not conn.execute("SELECT 1 FROM users WHERE username='admin'").fetchone():
@@ -244,19 +270,89 @@ attend_lock     = threading.Lock()
 attendance_state = {}   # class_id → {present:[student_ids], active:bool, faculty_id:int}
 
 def _mark_present(student_id, class_id, marked_by):
+    """
+    Mark a student present for TODAY in this class.
+    Returns True if newly inserted, False if already marked.
+
+    Three-layer duplicate guard:
+      1. In-memory set  — fast, per-process
+      2. DB pre-check   — survives server restarts
+      3. INSERT OR IGNORE on UNIQUE(student_id, class_id, date) — absolute last resort
+    """
+    today = date.today().isoformat()
+
+    # Layer 1 — in-memory
     with attend_lock:
         s = attendance_state.get(class_id)
         if not s or not s["active"]: return False
         if student_id in s["present"]: return False
-        s["present"].append(student_id)
-    today = date.today().isoformat()
+
+    # Layer 2 — DB pre-check (handles re-login / server restart case)
     conn = get_db()
-    conn.execute(
-        "INSERT INTO attendance (student_id,class_id,date,time,status,marked_by) VALUES(?,?,?,?,?,?)",
-        (student_id, class_id, today, datetime.now().strftime("%H:%M:%S"), "present", marked_by)
-    )
-    conn.commit(); conn.close()
-    return True
+    try:
+        already = conn.execute(
+            "SELECT 1 FROM attendance WHERE student_id=? AND class_id=? AND date=?",
+            (student_id, class_id, today)
+        ).fetchone()
+        if already:
+            # Sync in-memory state so future checks are fast
+            with attend_lock:
+                s = attendance_state.get(class_id)
+                if s and student_id not in s["present"]:
+                    s["present"].append(student_id)
+            return False
+
+        # Record the precise time at the moment of marking
+        now_time = datetime.now().strftime("%H:%M:%S")
+
+        # Layer 3 — INSERT OR IGNORE (race-condition safety net)
+        conn.execute(
+            "INSERT OR IGNORE INTO attendance "
+            "(student_id, class_id, date, time, status, marked_by) "
+            "VALUES (?, ?, ?, ?, 'present', ?)",
+            (student_id, class_id, today, now_time, marked_by)
+        )
+        inserted = conn.execute("SELECT changes()").fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    if inserted:
+        with attend_lock:
+            s = attendance_state.get(class_id)
+            if s and student_id not in s["present"]:
+                s["present"].append(student_id)
+        return True
+
+    return False
+
+
+def _record_faculty_verification(user_id, class_id):
+    """Persist faculty verification to DB (survives server restarts)."""
+    today = date.today().isoformat()
+    now   = datetime.now().strftime("%H:%M:%S")
+    conn  = get_db()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO faculty_verifications (user_id,class_id,date,time) "
+            "VALUES(?,?,?,?)",
+            (user_id, class_id, today, now)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _faculty_verified_today(user_id, class_id):
+    """Return True if this faculty already verified for this class today."""
+    today = date.today().isoformat()
+    conn  = get_db()
+    row   = conn.execute(
+        "SELECT 1 FROM faculty_verifications WHERE user_id=? AND class_id=? AND date=?",
+        (user_id, class_id, today)
+    ).fetchone()
+    conn.close()
+    return row is not None
 
 # ─────────────────────── HELPER ──────────────────────────────────────────────
 def save_image_as_jpeg(src, dest_path):
@@ -401,6 +497,87 @@ def api_users_delete(uid):
     reload_faculty_faces()
     return jsonify({"ok": True})
 
+
+@app.route("/api/users/<int:uid>")
+@login_required
+@super_admin_required
+def api_users_get(uid):
+    """Return a single user's full profile."""
+    conn = get_db()
+    row  = conn.execute(
+        "SELECT id,username,full_name,role,face_image_path,created_at FROM users WHERE id=?",
+        (uid,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({**dict(row), "face_enrolled": bool(row["face_image_path"])})
+
+
+@app.route("/api/users/<int:uid>", methods=["PUT"])
+@login_required
+@super_admin_required
+def api_users_update(uid):
+    """
+    Update a faculty member's details.
+    Accepts multipart/form-data so a new face photo can be uploaded at the same time.
+    All fields are optional — only provided fields are updated.
+    """
+    conn = get_db()
+    row  = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+
+    full_name = request.form.get("full_name", "").strip() or None
+    role      = request.form.get("role", "").strip()      or None
+    password  = request.form.get("password", "").strip()  or None
+
+    if role and role not in ("faculty", "super_admin"):
+        conn.close()
+        return jsonify({"error": "Invalid role"}), 400
+
+    # Handle new face photo upload
+    face_path = row["face_image_path"]   # keep existing unless replaced
+    face_file = request.files.get("face_image")
+    if face_file and face_file.filename:
+        # Delete old face image if it exists
+        if face_path:
+            old_abs = os.path.join(os.path.dirname(__file__), face_path)
+            try: os.remove(old_abs)
+            except: pass
+        fname    = f"{uuid.uuid4().hex}.jpg"
+        abs_path = os.path.join(USERS_FACES_DIR, fname)
+        save_image_as_jpeg(face_file.stream, abs_path)
+        face_path = str(pathlib.PurePosixPath("static") / "user_faces" / fname)
+
+    # Handle remove-face request (e.g. form sends remove_face=1)
+    if request.form.get("remove_face") == "1" and face_path:
+        old_abs = os.path.join(os.path.dirname(__file__), face_path)
+        try: os.remove(old_abs)
+        except: pass
+        face_path = None
+
+    # Build SET clause dynamically from provided fields
+    sets, params = [], []
+    if full_name is not None:
+        sets.append("full_name=?");       params.append(full_name)
+    if role:
+        sets.append("role=?");            params.append(role)
+    if password:
+        sets.append("password_hash=?");   params.append(generate_password_hash(password))
+    # Always update face_image_path (handles new upload or removal)
+    sets.append("face_image_path=?");    params.append(face_path)
+
+    if sets:
+        params.append(uid)
+        conn.execute(f"UPDATE users SET {','.join(sets)} WHERE id=?", params)
+        conn.commit()
+
+    conn.close()
+    reload_faculty_faces()
+    return jsonify({"ok": True})
+
 # ─────────────────────── CLASSES ─────────────────────────────────────────────
 @app.route("/api/classes")
 @login_required
@@ -492,6 +669,81 @@ def api_students_add():
     conn.commit(); new_id = cur.lastrowid; conn.close()
     return jsonify({"id": new_id, "name": name, "roll_number": roll}), 201
 
+
+@app.route("/api/students/bulk", methods=["POST"])
+@login_required
+@super_admin_required
+def api_students_bulk():
+    """
+    Bulk-insert students from a JSON array.
+    Body: { "students": [{"name": "...", "roll_number": "...", "class_id": 1}, ...] }
+
+    Returns per-row result:
+      inserted  – added successfully
+      duplicate – roll_number already exists in that class
+      error     – bad data
+
+    Skips duplicates (same roll_number + class_id) silently.
+    """
+    data     = request.get_json() or {}
+    rows     = data.get("students", [])
+    if not rows:
+        return jsonify({"error": "No students provided"}), 400
+    if len(rows) > 500:
+        return jsonify({"error": "Maximum 500 students per upload"}), 400
+
+    conn      = get_db()
+    inserted  = []
+    duplicates = []
+    errors    = []
+
+    for i, row in enumerate(rows):
+        name     = str(row.get("name",        "")).strip()
+        roll     = str(row.get("roll_number", "")).strip()
+        class_id = row.get("class_id")
+
+        if not name or not roll or not class_id:
+            errors.append({"row": i + 1, "reason": "Missing name, roll_number, or class_id",
+                           "data": row})
+            continue
+
+        try:
+            class_id = int(class_id)
+        except (TypeError, ValueError):
+            errors.append({"row": i + 1, "reason": "class_id must be a number", "data": row})
+            continue
+
+        # Check for duplicate roll_number in the same class
+        existing = conn.execute(
+            "SELECT id FROM students WHERE roll_number=? AND class_id=?",
+            (roll, class_id)
+        ).fetchone()
+        if existing:
+            duplicates.append({"row": i + 1, "roll_number": roll, "name": name})
+            continue
+
+        try:
+            cur = conn.execute(
+                "INSERT INTO students (name,roll_number,class_id) VALUES(?,?,?)",
+                (name, roll, class_id)
+            )
+            inserted.append({"id": cur.lastrowid, "name": name, "roll_number": roll,
+                             "class_id": class_id})
+        except Exception as e:
+            errors.append({"row": i + 1, "reason": str(e), "data": row})
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "inserted":   len(inserted),
+        "duplicates": len(duplicates),
+        "errors":     len(errors),
+        "inserted_students":  inserted,
+        "duplicate_students": duplicates,
+        "error_rows":         errors,
+    }), 201
+
 @app.route("/api/students/<int:sid>", methods=["DELETE"])
 @login_required
 @super_admin_required
@@ -500,6 +752,62 @@ def api_students_delete(sid):
     conn.execute("DELETE FROM students WHERE id=?", (sid,))
     conn.commit(); conn.close()
     reload_known_faces()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/students/<int:sid>", methods=["PUT"])
+@login_required
+@super_admin_required
+def api_students_update(sid):
+    """
+    Update a student's name, roll_number, or class_id.
+    All fields are optional — only provided non-empty fields are updated.
+    """
+    data = request.get_json() or {}
+    conn = get_db()
+
+    row = conn.execute("SELECT * FROM students WHERE id=?", (sid,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Student not found"}), 404
+
+    name        = data.get("name",        "").strip() or None
+    roll_number = data.get("roll_number", "").strip() or None
+    class_id    = data.get("class_id")
+
+    # Validate class_id if provided
+    if class_id is not None:
+        try:
+            class_id = int(class_id)
+        except (TypeError, ValueError):
+            conn.close()
+            return jsonify({"error": "class_id must be a number"}), 400
+        if not conn.execute("SELECT 1 FROM classes WHERE id=?", (class_id,)).fetchone():
+            conn.close()
+            return jsonify({"error": "Class not found"}), 404
+
+    # Check duplicate roll number in same class (excluding this student)
+    target_class = class_id if class_id is not None else row["class_id"]
+    check_roll   = roll_number if roll_number is not None else row["roll_number"]
+    dup = conn.execute(
+        "SELECT id FROM students WHERE roll_number=? AND class_id=? AND id!=?",
+        (check_roll, target_class, sid)
+    ).fetchone()
+    if dup:
+        conn.close()
+        return jsonify({"error": f"Roll number '{check_roll}' already exists in this class"}), 409
+
+    sets, params = [], []
+    if name        is not None: sets.append("name=?");        params.append(name)
+    if roll_number is not None: sets.append("roll_number=?"); params.append(roll_number)
+    if class_id    is not None: sets.append("class_id=?");    params.append(class_id)
+
+    if sets:
+        params.append(sid)
+        conn.execute(f"UPDATE students SET {', '.join(sets)} WHERE id=?", params)
+        conn.commit()
+
+    conn.close()
     return jsonify({"ok": True})
 
 # ─────────────────────── STUDENT FACES ───────────────────────────────────────
@@ -582,23 +890,43 @@ def api_session_start():
     students = [dict(r) for r in conn.execute(
         "SELECT * FROM students WHERE class_id=? ORDER BY name", (class_id,)
     ).fetchall()]
+
+    # Load students already marked present today (resume after crash / re-login)
+    today = date.today().isoformat()
+    already_present_rows = conn.execute(
+        """SELECT a.student_id FROM attendance a
+           WHERE a.class_id=? AND a.date=?""",
+        (class_id, today)
+    ).fetchall()
+    already_present_ids = [r["student_id"] for r in already_present_rows]
+
+    # Check if faculty already verified for this class today (no re-verify needed)
+    already_verified = _faculty_verified_today(current_user.id, class_id)
     conn.close()
 
     with attend_lock:
-        # Allow starting a new session (replaces any previous one for same class)
+        existing = attendance_state.get(class_id, {})
+        # Merge DB-present with any in-memory present (handles mid-session start)
+        merged_present = list(set(
+            existing.get("present", []) + already_present_ids
+        ))
         attendance_state[class_id] = {
-            "present":    [],
-            "active":     True,
-            "faculty_id": current_user.id,
-            "faculty_verified": False,
-            "blink_states": {},   # per-face blink tracking during verification
+            "present":          merged_present,
+            "active":           True,
+            "faculty_id":       current_user.id,
+            "faculty_verified": already_verified,
+            "blink_states":     existing.get("blink_states", {}),
         }
 
     return jsonify({
-        "session_id":  class_id,
-        "class_id":    class_id,
-        "students":    students,
+        "session_id":       class_id,
+        "class_id":         class_id,
+        "students":         students,
         "faculty_enrolled": bool(current_user.face_image_path),
+        # Tell the frontend whether to skip faculty verify step
+        "faculty_already_verified": already_verified,
+        # Return who is already present so UI can show them immediately
+        "already_present_count": len(already_present_ids),
     })
 
 @app.route("/api/attendance/sessions/<int:class_id>/stop", methods=["POST"])
@@ -608,6 +936,48 @@ def api_session_stop(class_id):
         if class_id in attendance_state:
             attendance_state[class_id]["active"] = False
     return jsonify({"ok": True})
+
+@app.route("/api/attendance/sessions/<int:class_id>/state")
+@login_required
+def api_session_state(class_id):
+    """
+    Returns today's attendance state for a class — used by the frontend on
+    page load / re-login to resume a session without losing progress.
+    Returns:
+      - present: list of student records already marked today
+      - pending: list of student records NOT yet marked today
+      - faculty_verified: whether this faculty already verified today
+      - total_students: total enrolled
+    """
+    today = date.today().isoformat()
+    conn  = get_db()
+
+    # All enrolled students
+    all_students = [dict(r) for r in conn.execute(
+        "SELECT * FROM students WHERE class_id=? ORDER BY name", (class_id,)
+    ).fetchall()]
+
+    # Already marked present today
+    present_rows = conn.execute(
+        """SELECT a.id AS att_id, a.time, s.id, s.name, s.roll_number
+           FROM attendance a JOIN students s ON s.id=a.student_id
+           WHERE a.class_id=? AND a.date=? ORDER BY a.id""",
+        (class_id, today)
+    ).fetchall()
+
+    present_ids = {r["id"] for r in present_rows}
+    pending = [s for s in all_students if s["id"] not in present_ids]
+
+    already_verified = _faculty_verified_today(current_user.id, class_id)
+    conn.close()
+
+    return jsonify({
+        "present":          [dict(r) for r in present_rows],
+        "pending":          pending,
+        "faculty_verified": already_verified,
+        "total_students":   len(all_students),
+        "date":             today,
+    })
 
 @app.route("/api/attendance/status/<int:class_id>")
 @login_required
@@ -620,8 +990,16 @@ def api_attendance_status(class_id):
            WHERE a.class_id=? AND a.date=? ORDER BY a.id""",
         (class_id, today)
     ).fetchall()
+    # Total students for this class
+    total = conn.execute(
+        "SELECT COUNT(*) FROM students WHERE class_id=?", (class_id,)
+    ).fetchone()[0]
     conn.close()
-    return jsonify({"present": [dict(r) for r in rows], "count": len(rows)})
+    return jsonify({
+        "present": [dict(r) for r in rows],
+        "count":   len(rows),
+        "total":   total,
+    })
 
 # ─────────────────────── MULTI-FACE RECOGNITION ──────────────────────────────
 # Per-person blink state (keyed by face bounding-box hash for students)
@@ -649,28 +1027,29 @@ def api_recognize():
     except Exception as e:
         return jsonify({"error": f"Invalid image: {e}"}), 400
 
-    # Resize for speed
+    # Resize for speed — keep small to reduce face_locations time
     small = cv2.resize(frame, (0, 0), fx=SCALE, fy=SCALE)
     rgb   = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
     rgb   = np.ascontiguousarray(rgb, dtype=np.uint8)
 
     try:
-        locations = face_recognition.face_locations(rgb, model="hog")
+        # number_of_times_to_upsample=0 skips upsampling — much faster, fine for close-up faces
+        locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=0, model="hog")
     except Exception:
         locations = []
 
     if not locations:
         return jsonify({"faces": [], "face_count": 0})
 
-    # Get all landmarks for liveness
+    # Get all landmarks for liveness (only called if faces were found)
     try:
         all_lms = face_recognition.face_landmarks(rgb, locations)
     except Exception:
         all_lms = [None] * len(locations)
 
-    # Get all encodings
+    # Get all encodings — num_jitters=1 is accurate enough, already default
     try:
-        all_encs = face_recognition.face_encodings(rgb, locations)
+        all_encs = face_recognition.face_encodings(rgb, locations, num_jitters=1)
     except Exception:
         all_encs = [None] * len(locations)
 
@@ -682,6 +1061,16 @@ def api_recognize():
             fac_encs  = list(faculty_encodings)
             fac_ids   = list(faculty_user_ids)
             fac_names = dict(faculty_names)
+
+        # Ensure current user's face is actually enrolled
+        if current_user.id not in fac_ids:
+            return jsonify({
+                "faces": [{"name": current_user.full_name or current_user.username,
+                           "decision": "NOT_ENROLLED",
+                           "box": None}],
+                "face_count": 0,
+                "error": "Your face photo is not enrolled. Ask an admin to add it in your profile."
+            })
 
         for i, (loc, lms, enc) in enumerate(zip(locations, all_lms, all_encs)):
             t, r, b, l = [int(v / SCALE) for v in loc]
@@ -699,18 +1088,30 @@ def api_recognize():
 
             dist_arr = face_recognition.face_distance(fac_encs, enc)
             best     = int(np.argmin(dist_arr))
-            if dist_arr[best] <= MATCH_TOLERANCE and fac_ids[best] == current_user.id:
-                name = fac_names.get(fac_ids[best], current_user.username)
+
+            # Use a slightly more lenient tolerance for mobile cameras
+            FACULTY_TOLERANCE = 0.62
+
+            # Only match against the current user's own enrolled face(s)
+            if dist_arr[best] <= FACULTY_TOLERANCE and fac_ids[best] == current_user.id:
+                name = fac_names.get(fac_ids[best], current_user.full_name or current_user.username)
                 if liveness:
-                    # Mark session as faculty-verified
+                    # Mark session as faculty-verified in memory AND persist to DB
                     if class_id:
                         with attend_lock:
                             s = attendance_state.get(class_id)
                             if s: s["faculty_verified"] = True
+                        # Persist so a re-login skips re-verification
+                        _record_faculty_verification(current_user.id, class_id)
                     results.append({"name": name, "decision": "FACULTY_VERIFIED", "box": box,
                                     "user_id": fac_ids[best]})
                 else:
                     results.append({"name": name, "decision": "SPOOF", "box": box})
+            elif fac_ids[best] == current_user.id and dist_arr[best] <= FACULTY_TOLERANCE + 0.08:
+                # Face is recognized as the right person but distance is borderline —
+                # give useful feedback instead of DENIED
+                name = fac_names.get(fac_ids[best], current_user.full_name or current_user.username)
+                results.append({"name": name, "decision": "SPOOF", "box": box})
             else:
                 results.append({"name": "Unknown", "decision": "DENIED", "box": box})
 
@@ -779,14 +1180,142 @@ def _attendance_query(class_id=None, date_from=None, date_to=None, faculty_id=No
     conn.close()
     return [dict(r) for r in rows]
 
+# ─────────────────────── FACULTY VERIFICATION LOG (super_admin only) ─────────
+@app.route("/api/faculty/verifications")
+@login_required
+@super_admin_required
+def api_faculty_verifications():
+    """List of all faculty session verifications — super_admin eyes only."""
+    date_from  = request.args.get("date_from")
+    date_to    = request.args.get("date_to")
+    class_id   = request.args.get("class_id", type=int)
+
+    clauses, params = [], []
+    if date_from: clauses.append("fv.date >= ?"); params.append(date_from)
+    if date_to:   clauses.append("fv.date <= ?"); params.append(date_to)
+    if class_id:  clauses.append("fv.class_id = ?"); params.append(class_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    sql = f"""
+        SELECT fv.id, fv.date, fv.time,
+               u.full_name AS faculty_name, u.username,
+               c.name AS class_name, c.section
+        FROM faculty_verifications fv
+        JOIN users u ON u.id = fv.user_id
+        JOIN classes c ON c.id = fv.class_id
+        {where}
+        ORDER BY fv.date DESC, fv.time DESC
+    """
+    conn = get_db()
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return jsonify({"verifications": [dict(r) for r in rows]})
+
+
+# ─────────────────────── ATTENDANCE PERCENTAGE ───────────────────────────────
+@app.route("/api/attendance/percentage")
+@login_required
+def api_attendance_percentage():
+    """
+    Returns attendance percentage for every student.
+    Logic: for each class a student belongs to, count the unique session-dates
+    that class had (= total conducted), and count how many of those the student
+    attended.  75% is the standard minimum threshold.
+
+    Query params (all optional):
+      class_id   – filter to one class
+      student_id – filter to one student
+    """
+    class_id   = request.args.get("class_id",   type=int)
+    student_id = request.args.get("student_id", type=int)
+
+    conn = get_db()
+
+    # Total sessions held per class = distinct dates that any attendance was
+    # recorded for that class (each faculty session covers one date).
+    sessions_sql = """
+        SELECT class_id, COUNT(DISTINCT date) AS total_sessions
+        FROM attendance
+        GROUP BY class_id
+    """
+    sessions_map = {r["class_id"]: r["total_sessions"]
+                    for r in conn.execute(sessions_sql).fetchall()}
+
+    # Build student list
+    clauses, params = [], []
+    if class_id:
+        clauses.append("s.class_id = ?"); params.append(class_id)
+    if student_id:
+        clauses.append("s.id = ?"); params.append(student_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    students_sql = f"""
+        SELECT s.id, s.name, s.roll_number,
+               c.id AS class_id, c.name AS class_name, c.section
+        FROM students s
+        JOIN classes c ON c.id = s.class_id
+        {where}
+        ORDER BY c.name, c.section, s.name
+    """
+    students = conn.execute(students_sql, params).fetchall()
+
+    results = []
+    for st in students:
+        sid  = st["id"]
+        cid  = st["class_id"]
+        total = sessions_map.get(cid, 0)
+
+        # Days the student was actually present
+        attended = conn.execute(
+            "SELECT COUNT(DISTINCT date) FROM attendance "
+            "WHERE student_id=? AND class_id=?",
+            (sid, cid)
+        ).fetchone()[0]
+
+        pct = round((attended / total * 100), 1) if total > 0 else None
+
+        results.append({
+            "student_id":   sid,
+            "name":         st["name"],
+            "roll_number":  st["roll_number"],
+            "class_id":     cid,
+            "class_name":   st["class_name"],
+            "section":      st["section"],
+            "total_sessions": total,
+            "attended":     attended,
+            "percentage":   pct,
+            "status":       (
+                "No Data"  if pct is None else
+                "Critical" if pct < 65   else
+                "Low"      if pct < 75   else
+                "Good"
+            ),
+        })
+
+    conn.close()
+    return jsonify({"students": results})
+
+
 @app.route("/api/attendance/report")
 @login_required
 def api_attendance_report():
     class_id   = request.args.get("class_id", type=int)
     date_from  = request.args.get("date_from")
     date_to    = request.args.get("date_to")
-    faculty_id = request.args.get("faculty_id", type=int) if current_user.role == "super_admin" else None
-    records    = _attendance_query(class_id, date_from, date_to, faculty_id)
+    # Faculty only see their own sessions; super_admin can filter by any faculty
+    faculty_id = None
+    if current_user.role == "super_admin":
+        faculty_id = request.args.get("faculty_id", type=int)
+    else:
+        # Faculty see ALL student records for classes they took (not filtered by faculty_id)
+        # — they see student names/times but NOT other faculty info
+        pass
+    records = _attendance_query(class_id, date_from, date_to, faculty_id)
+    # Strip faculty identity from records returned to non-admin users
+    if current_user.role != "super_admin":
+        for r in records:
+            r.pop("faculty_name", None)
+            r.pop("faculty_username", None)
     return jsonify({"records": records})
 
 @app.route("/api/attendance/export/csv")
@@ -870,13 +1399,14 @@ if __name__ == "__main__":
     _cert = os.path.join(os.path.dirname(__file__), "cert.pem")
     _key  = os.path.join(os.path.dirname(__file__), "key.pem")
     if os.path.exists(_cert) and os.path.exists(_key):
-        print("[SSL] Starting with HTTPS on port 5443")
+        print("[SSL] Starting with HTTPS on port 5443  (threaded mode)")
         print("[SSL] Open on this device:  https://127.0.0.1:5443")
-        print("[SSL] Open on mobile/LAN:   https://192.168.1.184:5443")
+        print("[SSL] Open on mobile/LAN:   https://10.221.138.1:5443")
         print("[SSL] First visit: browser will warn 'Not secure' — click Advanced → Proceed")
         app.run(host="0.0.0.0", port=5443, debug=False,
+                threaded=True,        # handle each request in its own thread
                 ssl_context=(_cert, _key))
     else:
         print("[HTTP] No certificates found. Camera will NOT work on mobile.")
         print("[HTTP] Running on http://0.0.0.0:5000")
-        app.run(host="0.0.0.0", port=5000, debug=False)
+        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
